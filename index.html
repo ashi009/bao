@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Bao - 坦桑尼亚双人对战棋</title>
+    
+    <!-- 引入 Tailwind CSS 进行页面样式布局 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 引入 React 和 ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    
+    <!-- 引入 Babel 使得浏览器可以直接解析 JSX 语法 -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        /* 阻止移动端浏览器的默认下拉刷新和双击缩放，提升游戏体验 */
+        body {
+            touch-action: none;
+            overflow: hidden;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+    </style>
+</head>
+<body class="bg-[#DCAE78]">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // === 常量和路径定义 ===
+        // P1 坐在上方 (行 0 是后方，行 1 是前线)
+        const P1_CW = [
+            [0, 7], [0, 6], [0, 5], [0, 4], [0, 3], [0, 2], [0, 1], [0, 0],
+            [1, 0], [1, 1], [1, 2], [1, 3], [1, 4], [1, 5], [1, 6], [1, 7]
+        ];
+        const P1_CCW = [...P1_CW].reverse();
+
+        // P2 坐在下方 (行 2 是前线，行 3 是后方)
+        const P2_CW = [
+            [3, 0], [2, 0], [2, 1], [2, 2], [2, 3], [2, 4], [2, 5], [2, 6], [2, 7],
+            [3, 7], [3, 6], [3, 5], [3, 4], [3, 3], [3, 2], [3, 1]
+        ];
+        const P2_CCW = [...P2_CW].reverse();
+
+        const getPath = (player, dir) => {
+            if (player === 1) return dir === 'CW' ? P1_CW : P1_CCW;
+            return dir === 'CW' ? P2_CW : P2_CCW;
+        };
+
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+        function BaoGame() {
+            const [board, setBoard] = useState(() => Array(4).fill(null).map(() => Array(8).fill(2)));
+            const [turn, setTurn] = useState(1); // 1 或 2
+            const [directions, setDirections] = useState({ 1: null, 2: null });
+            const [animating, setAnimating] = useState(false);
+            const [winner, setWinner] = useState(null);
+            
+            const [selectedPit, setSelectedPit] = useState(null); // 等待选择方向时的格子
+            const [activePit, setActivePit] = useState(null);     // 动画中当前操作的格子
+            const [capturePit, setCapturePit] = useState(null);   // 动画中被吃子的格子
+
+            const checkWinCondition = (currentBoard) => {
+                const p1Frontline = currentBoard[1].reduce((sum, val) => sum + val, 0);
+                const p2Frontline = currentBoard[2].reduce((sum, val) => sum + val, 0);
+                
+                if (p1Frontline === 0) return 2; // P1 前线空了，P2 赢
+                if (p2Frontline === 0) return 1; // P2 前线空了，P1 赢
+                return 0;
+            };
+
+            const handlePitClick = async (r, c) => {
+                if (animating || winner) return;
+                if (board[r][c] === 0) return;
+                
+                // 只能点击自己领地的格子
+                if (turn === 1 && r > 1) return;
+                if (turn === 2 && r < 2) return;
+
+                // 如果还没有选择方向，则弹出选择框
+                if (!directions[turn]) {
+                    setSelectedPit({ r, c });
+                    return;
+                }
+
+                await runTurn(r, c, directions[turn]);
+            };
+
+            const chooseDirection = async (dir) => {
+                const { r, c } = selectedPit;
+                setSelectedPit(null);
+                setDirections(prev => ({ ...prev, [turn]: dir }));
+                await runTurn(r, c, dir);
+            };
+
+            const runTurn = async (startR, startC, dir) => {
+                setAnimating(true);
+                let currentBoard = JSON.parse(JSON.stringify(board));
+                
+                // 步骤 2：拿出当前格子全部棋子
+                let seeds = currentBoard[startR][startC];
+                currentBoard[startR][startC] = 0;
+                setActivePit({ r: startR, c: startC });
+                setBoard([...currentBoard]);
+                await sleep(300);
+
+                const path = getPath(turn, dir);
+                let currIdx = path.findIndex(p => p[0] === startR && p[1] === startC);
+                
+                let steps = 0; // 防止极端情况的死循环
+                while (seeds > 0 && steps < 2000) {
+                    steps++;
+                    currIdx = (currIdx + 1) % path.length;
+                    let [r, c] = path[currIdx];
+
+                    // 步骤 3：依次放下棋子
+                    seeds--;
+                    let wasEmpty = currentBoard[r][c] === 0;
+                    currentBoard[r][c]++;
+                    setActivePit({ r, c });
+                    setBoard(JSON.parse(JSON.stringify(currentBoard)));
+                    await sleep(250);
+
+                    // 步骤 4：最后一个棋子落下时
+                    if (seeds === 0) {
+                        if (wasEmpty) {
+                            // 当前格子本来没有棋子，回合结束
+                            break;
+                        } else {
+                            // 否则检查是否触发吃子或连动
+                            let isFrontline = (turn === 1 && r === 1) || (turn === 2 && r === 2);
+                            let oppR = turn === 1 ? 2 : 1;
+                            let oppSeeds = currentBoard[oppR][c];
+
+                            // a) 如果当前格子在前线，且对手前线相邻格子有棋子 -> 吃子
+                            if (isFrontline && oppSeeds > 0) {
+                                setCapturePit({ r: oppR, c });
+                                currentBoard[oppR][c] = 0;
+                                currentBoard[r][c] += oppSeeds;
+                                setBoard(JSON.parse(JSON.stringify(currentBoard)));
+                                await sleep(500); // 展示吃子动画
+                                setCapturePit(null);
+                            }
+
+                            // 每次落下棋子或吃子后，检查是否有人失败（前线空了）
+                            let winCheck = checkWinCondition(currentBoard);
+                            if (winCheck) {
+                                setWinner(winCheck);
+                                setAnimating(false);
+                                setActivePit(null);
+                                return;
+                            }
+
+                            // b) 拿出当前格子的所有棋子（包括刚放下的和吃到的），继续行棋 (连动)
+                            seeds = currentBoard[r][c];
+                            currentBoard[r][c] = 0;
+                            setBoard(JSON.parse(JSON.stringify(currentBoard)));
+                            await sleep(300);
+                        }
+                    }
+                }
+
+                // 回合正常结束，检查最终胜利条件
+                let finalWinCheck = checkWinCondition(currentBoard);
+                if (finalWinCheck) {
+                    setWinner(finalWinCheck);
+                } else {
+                    setTurn(turn === 1 ? 2 : 1);
+                }
+                
+                setAnimating(false);
+                setActivePit(null);
+            };
+
+            const resetGame = () => {
+                setBoard(Array(4).fill(null).map(() => Array(8).fill(2)));
+                setTurn(1);
+                setDirections({ 1: null, 2: null });
+                setWinner(null);
+                setAnimating(false);
+                setSelectedPit(null);
+                setActivePit(null);
+                setCapturePit(null);
+            };
+
+            const isPlayerArea = (r, player) => {
+                return (player === 1 && r <= 1) || (player === 2 && r >= 2);
+            };
+
+            return (
+                <div className="flex flex-col h-screen bg-[#DCAE78] font-sans overflow-hidden select-none">
+                    {/* 玩家 1 区域 (顶部，倒置) */}
+                    <div className={`flex-1 relative flex items-center justify-center transition-colors duration-500 ${turn === 1 && !winner ? 'bg-[#C18C52]' : ''}`}>
+                        <div className="rotate-180 flex flex-col items-center gap-2">
+                            <h2 className="text-3xl font-bold text-[#4A3525]">
+                                玩家 1 {turn === 1 && <span className="text-white bg-[#8B5A2B] px-3 py-1 rounded-full text-sm align-middle ml-2 animate-pulse">回合</span>}
+                            </h2>
+                            {winner === 1 && <div className="text-2xl font-black text-green-900 drop-shadow-md">胜利！</div>}
+                            {winner === 2 && <div className="text-2xl font-black text-red-900 drop-shadow-md">失败</div>}
+                        </div>
+                    </div>
+
+                    {/* 棋盘区域 */}
+                    <div className="bg-[#5D4037] shadow-2xl z-10 p-2 sm:p-4 border-y-8 border-[#3E2723] relative">
+                        
+                        {/* 遮罩及方向选择框 */}
+                        {selectedPit && (
+                            <div className="absolute inset-0 bg-black/60 z-20 flex items-center justify-center backdrop-blur-sm">
+                                <div className={`bg-[#F4D03F] p-4 sm:p-6 rounded-2xl shadow-2xl flex flex-col items-center gap-4 sm:gap-6 border-4 border-[#E67E22] ${turn === 1 ? 'rotate-180' : ''}`}>
+                                    <h3 className="text-lg sm:text-xl font-bold text-[#873600]">请选择行棋方向</h3>
+                                    <div className="flex gap-4 sm:gap-6">
+                                        <button onClick={() => chooseDirection('CW')} className="flex flex-col items-center bg-[#D35400] text-white p-3 sm:p-4 rounded-xl hover:bg-[#E67E22] active:scale-95 transition-transform shadow-lg">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+                                            <span className="mt-2 text-sm sm:text-base font-bold">顺时针</span>
+                                        </button>
+                                        <button onClick={() => chooseDirection('CCW')} className="flex flex-col items-center bg-[#D35400] text-white p-3 sm:p-4 rounded-xl hover:bg-[#E67E22] active:scale-95 transition-transform shadow-lg">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                                            <span className="mt-2 text-sm sm:text-base font-bold">逆时针</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="max-w-4xl mx-auto flex flex-col gap-1 sm:gap-2">
+                            {board.map((row, r) => (
+                                <React.Fragment key={r}>
+                                    {/* 渲染行 */}
+                                    <div className={`flex gap-1 sm:gap-2 justify-center p-1 rounded-xl ${r === 1 || r === 2 ? 'bg-[#4E342E]' : ''}`}>
+                                        {row.map((seeds, c) => {
+                                            const isClickable = !animating && !winner && isPlayerArea(r, turn) && seeds > 0;
+                                            const isActive = activePit?.r === r && activePit?.c === c;
+                                            const isCaptured = capturePit?.r === r && capturePit?.c === c;
+                                            
+                                            return (
+                                                <div
+                                                    key={c}
+                                                    onClick={() => isClickable && handlePitClick(r, c)}
+                                                    className={`
+                                                        relative w-10 h-10 sm:w-16 sm:h-16 rounded-full flex items-center justify-center text-xl sm:text-2xl font-black transition-all duration-300
+                                                        ${isPlayerArea(r, 1) ? 'bg-[#8D6E63] text-[#FFECB3]' : 'bg-[#795548] text-[#FFE082]'}
+                                                        ${isActive ? 'ring-4 ring-yellow-300 scale-110 shadow-[0_0_15px_rgba(253,224,71,0.8)] z-10 bg-[#A1887F]' : 'shadow-inner'}
+                                                        ${isCaptured ? 'ring-4 ring-red-500 bg-red-800 scale-90' : ''}
+                                                        ${isClickable ? 'cursor-pointer hover:ring-4 hover:ring-[#FFB300]' : ''}
+                                                        ${r === 1 || r === 2 ? 'border-2 border-[#3E2723]' : ''}
+                                                    `}
+                                                >
+                                                    {seeds > 0 ? (
+                                                        <div className="relative z-10">{seeds}</div>
+                                                    ) : null}
+                                                    
+                                                    {/* 棋子视觉效果点缀 */}
+                                                    {seeds > 0 && seeds <= 4 && (
+                                                        <div className="absolute inset-0 flex flex-wrap items-center justify-center opacity-30 pointer-events-none p-2 sm:p-4">
+                                                            {[...Array(seeds)].map((_, i) => (
+                                                                <div key={i} className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-black rounded-full m-[1px]"></div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                    
+                                    {/* 前线分割线 */}
+                                    {r === 1 && (
+                                        <div className="h-2 sm:h-4 w-full flex items-center justify-center">
+                                            <div className="w-[90%] h-[2px] bg-[#3E2723] opacity-50 rounded-full"></div>
+                                        </div>
+                                    )}
+                                </React.Fragment>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* 玩家 2 区域 (底部，正常) */}
+                    <div className={`flex-1 relative flex items-center justify-center transition-colors duration-500 ${turn === 2 && !winner ? 'bg-[#C18C52]' : ''}`}>
+                        <div className="flex flex-col items-center gap-2">
+                            {winner === 2 && <div className="text-2xl font-black text-green-900 drop-shadow-md">胜利！</div>}
+                            {winner === 1 && <div className="text-2xl font-black text-red-900 drop-shadow-md">失败</div>}
+                            <h2 className="text-3xl font-bold text-[#4A3525]">
+                                玩家 2 {turn === 2 && <span className="text-white bg-[#8B5A2B] px-3 py-1 rounded-full text-sm align-middle ml-2 animate-pulse">回合</span>}
+                            </h2>
+                        </div>
+                    </div>
+
+                    {/* 游戏结束弹窗 */}
+                    {winner && (
+                        <div className="absolute inset-0 bg-black/70 z-50 flex items-center justify-center backdrop-blur-sm">
+                            <div className="bg-[#E6C280] p-6 sm:p-8 rounded-3xl shadow-2xl text-center border-4 border-[#8B5A2B] flex flex-col items-center">
+                                <h2 className="text-3xl sm:text-4xl font-black text-[#4A3525] mb-4">
+                                    游戏结束
+                                </h2>
+                                <p className="text-xl sm:text-2xl text-[#873600] font-bold mb-8">
+                                    恭喜 玩家 {winner} 获胜！
+                                </p>
+                                <button 
+                                    onClick={resetGame}
+                                    className="bg-[#D35400] text-white text-lg sm:text-xl font-bold py-3 px-8 rounded-full shadow-lg hover:bg-[#E67E22] active:scale-95 transition-transform"
+                                >
+                                    重新开始
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // 渲染 React 组件到页面中
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<BaoGame />);
+    </script>
+</body>
+</html>
+
